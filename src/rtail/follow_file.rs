@@ -1,9 +1,9 @@
 use nix::{errno::Errno, sys::signal, unistd::Pid};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use std::os::unix::fs::MetadataExt;
 use std::{
-    fs::File,
+    fs::{File, Metadata},
     io::{BufReader, Read, Seek, SeekFrom, Write},
+    os::unix::fs::MetadataExt,
     path::Path,
     process::exit,
     thread,
@@ -63,23 +63,30 @@ pub fn follow_file_inotify(
                             for path in &event.paths {
                                 if follow_name {
                                     if path.file_name() == file_path.file_name() {
+                                        let metadata = file.metadata()?;
+
                                         // Re-open the file in case it was rotated
-                                        match reopen_file_if_rotated(file_path, &mut file) {
-                                            Ok(rotated) => {
-                                                if rotated {
+                                        match reopen_file_if_rotated(file_path, &metadata) {
+                                            Ok(file_opt) => match file_opt {
+                                                Some(new_file) => {
                                                     println!(
-                                                        "\nFile {:?} rotated, reopening",
+                                                        "File rotated, reopening {:?}",
                                                         file_path
                                                     );
+                                                    file = new_file;
+                                                    position = 0;
+                                                    reader = BufReader::new(&file);
                                                 }
+                                                None => {}
+                                            },
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "Error reopening file {:?}: {}",
+                                                    file_path, e
+                                                );
+                                                continue;
                                             }
-                                            Err(e) => eprintln!(
-                                                "Error reopening file {:?}: {}",
-                                                file_path, e
-                                            ),
                                         };
-                                        // Recreate reader after reopening file
-                                        reader = BufReader::new(&file);
                                     } else {
                                         continue;
                                     }
@@ -194,12 +201,9 @@ fn is_process_running(pid: i32) -> bool {
 
 fn reopen_file_if_rotated(
     file_path: &Path,
-    file: &mut File,
-) -> Result<bool, Box<dyn std::error::Error>> {
+    current_metadata: &Metadata,
+) -> Result<Option<File>, Box<dyn std::error::Error>> {
     let mut first_attempt = true;
-
-    // Check if inode has changed
-    let current_metadata = file.metadata()?;
 
     loop {
         match File::open(file_path) {
@@ -209,12 +213,10 @@ fn reopen_file_if_rotated(
                 if new_metadata.ino() != current_metadata.ino()
                     || new_metadata.dev() != current_metadata.dev()
                 {
-                    *file = f;
-
-                    return Ok(true);
+                    return Ok(Some(f));
                 }
 
-                return Ok(false);
+                return Ok(None);
             }
             Err(_) => {
                 if first_attempt {
