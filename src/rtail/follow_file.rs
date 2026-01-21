@@ -1,5 +1,5 @@
 use nix::{errno::Errno, sys::signal, unistd::Pid};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher, event::EventKind};
 use std::{
     fs::{File, Metadata},
     io::{BufReader, Read, Seek, SeekFrom, Write},
@@ -59,7 +59,7 @@ pub fn follow_file_inotify(
             Ok(event_result) => {
                 match event_result {
                     Ok(event) => match event.kind {
-                        notify::event::EventKind::Modify(_) => {
+                        EventKind::Modify(_) => {
                             for path in &event.paths {
                                 if follow_name {
                                     if path.file_name() == file_path.file_name() {
@@ -77,7 +77,9 @@ pub fn follow_file_inotify(
                                                     position = 0;
                                                     reader = BufReader::new(&file);
                                                 }
-                                                None => {}
+                                                None => {
+                                                    // No rotation detected, carry on
+                                                }
                                             },
                                             Err(e) => {
                                                 eprintln!(
@@ -88,6 +90,7 @@ pub fn follow_file_inotify(
                                             }
                                         };
                                     } else {
+                                        // Not the file we're following
                                         continue;
                                     }
                                 }
@@ -203,6 +206,10 @@ fn reopen_file_if_rotated(
     file_path: &Path,
     current_metadata: &Metadata,
 ) -> Result<Option<File>, Box<dyn std::error::Error>> {
+    // Try to reopen the file and compare inode and device numbers
+    // If they differ, the file was rotated, so return the new file handle
+    // If the file does not exist, keep trying until it does
+
     let mut first_attempt = true;
 
     loop {
