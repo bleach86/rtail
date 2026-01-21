@@ -1,6 +1,6 @@
 use std::env;
 
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
@@ -11,7 +11,10 @@ const EXAMPLES: &str =
 
 #[derive(Parser, Debug)]
 #[command(author = AUTHOR, version = VERSION, about = ABOUT,
-    override_usage = format!("{}{}", USAGE, EXAMPLES))]
+    override_usage = format!("{}{}", USAGE, EXAMPLES), group(
+        ArgGroup::new("follow_mode")
+            .args(["follow", "follow_name"])
+    ))]
 pub struct Args {
     pub filename: Option<Vec<String>>,
 
@@ -30,7 +33,7 @@ pub struct Args {
     pub follow: bool,
 
     /// Use with -f, terminate after process ID, PID dies
-    #[arg(long = "pid", requires = "follow")]
+    #[arg(long = "pid", requires = "follow_mode")]
     pub terminate_after_pid: Option<i32>,
 
     /// Follow by file name (handle log rotation)
