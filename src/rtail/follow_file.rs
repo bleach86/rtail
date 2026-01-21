@@ -64,7 +64,20 @@ pub fn follow_file_inotify(
                                 if follow_name {
                                     if path.file_name() == file_path.file_name() {
                                         // Re-open the file in case it was rotated
-                                        reopen_file_if_rotated(file_path, &mut file)?;
+                                        match reopen_file_if_rotated(file_path, &mut file) {
+                                            Ok(rotated) => {
+                                                if rotated {
+                                                    println!(
+                                                        "\nFile {:?} rotated, reopening",
+                                                        file_path
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => eprintln!(
+                                                "Error reopening file {:?}: {}",
+                                                file_path, e
+                                            ),
+                                        };
                                         // Recreate reader after reopening file
                                         reader = BufReader::new(&file);
                                     } else {
@@ -182,7 +195,7 @@ fn is_process_running(pid: i32) -> bool {
 fn reopen_file_if_rotated(
     file_path: &Path,
     file: &mut File,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let mut first_attempt = true;
 
     // Check if inode has changed
@@ -198,10 +211,10 @@ fn reopen_file_if_rotated(
                 {
                     *file = f;
 
-                    return Ok(());
+                    return Ok(true);
                 }
 
-                return Ok(());
+                return Ok(false);
             }
             Err(_) => {
                 if first_attempt {
