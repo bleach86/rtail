@@ -1,5 +1,6 @@
 use nix::{errno::Errno, sys::signal, unistd::Pid};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::os::unix::fs::MetadataExt;
 use std::{
     fs::File,
     io::{BufReader, Read, Seek, SeekFrom, Write},
@@ -184,10 +185,22 @@ fn reopen_file_if_rotated(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut first_attempt = true;
 
+    // Check if inode has changed
+    let current_metadata = file.metadata()?;
+
     loop {
         match File::open(file_path) {
             Ok(f) => {
-                *file = f;
+                let new_metadata = f.metadata()?;
+
+                if new_metadata.ino() != current_metadata.ino()
+                    || new_metadata.dev() != current_metadata.dev()
+                {
+                    *file = f;
+
+                    return Ok(());
+                }
+
                 return Ok(());
             }
             Err(_) => {
