@@ -1,0 +1,23 @@
+[package]
+name = "rtail"
+version = "0.1.0"
+authors = ["bleach86"]
+description = "A Rust implementation of tail"
+edition = "2024"
+
+[package.metadata.deb]
+maintainer = "bleach86 <tux@gstvpn.com>"
+copyright = "2026, bleach86"
+license-file = ["LICENSE"]
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [["target/release/rtail", "usr/bin/", "755"]]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.5.54", features = ["derive"] }
+memchr = "2.7.6"
+nix = { version = "0.30.1", features = ["signal"] }
+notify = "8.2.0"
