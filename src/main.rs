@@ -7,7 +7,7 @@ use std::{
 };
 
 mod rtail;
-use rtail::{Args, follow_file_inotify, offset_tail, tail_bytes, tail_file};
+use rtail::{Args, FollowFile, offset_tail, tail_bytes, tail_file};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = Args::parse();
@@ -128,12 +128,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Follow the specified file
         let follow_file_name: String = input_files[0].clone();
         let follow_full_path: PathBuf = Path::new(&follow_file_name).canonicalize()?;
-        follow_file_inotify(
+
+        let mut follower = FollowFile::new(
             &follow_full_path,
             args.zero_terminated,
-            args.terminate_after_pid,
             args.follow_name,
+            args.terminate_after_pid,
         )?;
+
+        follower.follow_file_inotify()?;
     }
 
     Ok(())

@@ -1,186 +1,216 @@
 use nix::{errno::Errno, sys::signal, unistd::Pid};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher, event::EventKind};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher, event::EventKind, event::ModifyKind};
 use std::{
     fs::{File, Metadata},
     io::{BufReader, Read, Seek, SeekFrom, Write},
     os::unix::fs::MetadataExt,
     path::Path,
+    path::PathBuf,
     process::exit,
     thread,
     time::Duration,
 };
 
-pub fn follow_file_inotify(
-    file_path: &Path,
-    zero_terminated: bool,
-    terminate_after_pid: Option<i32>,
-    follow_name: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file: File = File::open(file_path)?;
-    let mut starting_len = file.metadata()?.len();
-    let mut position: u64 = starting_len;
-    let line_terminator: char = if zero_terminated { '\0' } else { '\n' };
-    let mut last_line: String = String::new();
+pub struct FollowFile {
+    pub file: File,
+    pub reader: BufReader<File>,
+    pub position: u64,
+    pub starting_len: u64,
+    pub last_line: String,
+    pub line_terminator: char,
+    pub file_path: std::path::PathBuf,
+    pub follow_name: bool,
+    pub terminate_after_pid: Option<i32>,
+}
 
-    if starting_len > 0 {
-        file.seek(SeekFrom::End(-1))?;
-        let mut buffer = [0; 1];
-        file.read_exact(&mut buffer)?;
-        let last_char = buffer[0] as char;
-        if last_char != line_terminator {
-            println!();
+impl FollowFile {
+    pub fn new(
+        file_path: &PathBuf,
+        zero_terminated: bool,
+        follow_name: bool,
+        terminate_after_pid: Option<i32>,
+    ) -> Result<FollowFile, Box<dyn std::error::Error>> {
+        let file: File = File::open(file_path)?;
+        let starting_len = file.metadata()?.len();
+        let position: u64 = starting_len;
+        let line_terminator: char = if zero_terminated { '\0' } else { '\n' };
+        let last_line: String = String::new();
+        let file_path: PathBuf = file_path.to_path_buf();
+        let reader = BufReader::new(file.try_clone()?);
+
+        Ok(FollowFile {
+            file,
+            reader,
+            position,
+            starting_len,
+            last_line,
+            line_terminator,
+            file_path,
+            follow_name,
+            terminate_after_pid,
+        })
+    }
+
+    pub fn follow_file_inotify(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.starting_len > 0 {
+            self.file.seek(SeekFrom::End(-1))?;
+            let mut buffer = [0; 1];
+            self.file.read_exact(&mut buffer)?;
+            let last_char = buffer[0] as char;
+            if last_char != self.line_terminator {
+                println!();
+            }
         }
-    }
 
-    // Start tailing from the end
-    file.seek(SeekFrom::Start(position))?;
+        // Start tailing from the end
+        self.file.seek(SeekFrom::Start(self.position))?;
 
-    let mut reader: BufReader<&File> = BufReader::new(&file);
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(tx)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher: RecommendedWatcher = notify::recommended_watcher(tx)?;
 
-    let follow_path = if follow_name {
-        file_path.parent().unwrap_or(Path::new("."))
-    } else {
-        file_path
-    };
+        let follow_path = if self.follow_name {
+            self.file_path.parent().unwrap_or(Path::new("."))
+        } else {
+            self.file_path.as_path()
+        };
 
-    watcher.watch(follow_path, RecursiveMode::NonRecursive)?;
+        watcher.watch(follow_path, RecursiveMode::NonRecursive)?;
 
-    // If terminate_after_pid is set, spawn a thread to monitor the process
-    if let Some(pid) = terminate_after_pid {
-        thread::spawn(move || {
-            check_process_running(pid);
-        });
-    }
+        // If terminate_after_pid is set, spawn a thread to monitor the process
+        if let Some(pid) = self.terminate_after_pid {
+            thread::spawn(move || {
+                check_process_running(pid);
+            });
+        }
 
-    loop {
-        match rx.recv() {
-            Ok(event_result) => {
-                match event_result {
-                    Ok(event) => match event.kind {
-                        EventKind::Modify(_) => {
+        loop {
+            match rx.recv() {
+                Ok(event_result) => {
+                    match event_result {
+                        Ok(event) => {
                             for path in &event.paths {
-                                if follow_name {
-                                    if path.file_name() == file_path.file_name() {
-                                        let metadata = file.metadata()?;
+                                if path == &self.file_path {
+                                    match event.kind {
+                                        EventKind::Modify(ModifyKind::Name(_)) => {
+                                            if self.follow_name {
+                                                let metadata = self.file.metadata()?;
 
-                                        // Re-open the file in case it was rotated
-                                        match reopen_file_if_rotated(file_path, &metadata) {
-                                            Ok(file_opt) => match file_opt {
-                                                Some(new_file) => {
-                                                    println!(
-                                                        "File rotated, reopening {:?}",
-                                                        file_path
+                                                // Re-open the file in case it was rotated
+                                                match reopen_file_if_rotated(
+                                                    &self.file_path,
+                                                    &metadata,
+                                                ) {
+                                                    Ok(file_opt) => match file_opt {
+                                                        Some(new_file) => {
+                                                            println!(
+                                                                "File rotated, reopening {:?}",
+                                                                self.file_path
+                                                            );
+                                                            self.file = new_file;
+                                                            self.position = 0;
+                                                            self.reader = BufReader::new(
+                                                                self.file.try_clone()?,
+                                                            );
+                                                        }
+                                                        None => {
+                                                            // No rotation detected, carry on
+                                                        }
+                                                    },
+                                                    Err(e) => {
+                                                        eprintln!(
+                                                            "Error reopening file {:?}: {}",
+                                                            self.file_path, e
+                                                        );
+                                                        continue;
+                                                    }
+                                                };
+
+                                                if let Err(e) = self.process_file_change() {
+                                                    eprintln!(
+                                                        "Error processing file change: {}",
+                                                        e
                                                     );
-                                                    file = new_file;
-                                                    position = 0;
-                                                    reader = BufReader::new(&file);
-                                                }
-                                                None => {
-                                                    // No rotation detected, carry on
-                                                }
-                                            },
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "Error reopening file {:?}: {}",
-                                                    file_path, e
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                    } else {
-                                        // Not the file we're following
-                                        continue;
-                                    }
-                                }
-
-                                let current_size = file.metadata()?.len();
-
-                                if current_size == 0 {
-                                    continue;
-                                }
-
-                                match handle_modify(
-                                    current_size,
-                                    &mut position,
-                                    &mut reader,
-                                    line_terminator,
-                                    &mut last_line,
-                                ) {
-                                    Ok(res) => {
-                                        match res {
-                                            true => {}
-                                            false => {
-                                                // File was truncated, reset reader
-                                                if current_size < starting_len {
-                                                    position = 0;
-                                                    file.seek(SeekFrom::Start(0))?;
-                                                    reader = BufReader::new(&file);
-                                                    handle_modify(
-                                                        current_size,
-                                                        &mut position,
-                                                        &mut reader,
-                                                        line_terminator,
-                                                        &mut last_line,
-                                                    )?;
                                                 }
                                             }
                                         }
-                                        starting_len = current_size;
+                                        EventKind::Modify(ModifyKind::Data(_)) => {
+                                            if let Err(e) = self.process_file_change() {
+                                                eprintln!("Error processing file change: {}", e);
+                                            }
+                                        }
+
+                                        _ => continue,
                                     }
-                                    Err(e) => eprintln!("Error handling file modification: {}", e),
-                                };
+                                }
                             }
                         }
-                        _ => continue,
-                    },
-                    Err(_) => continue,
+                        Err(_) => continue,
+                    }
                 }
+                Err(e) => eprintln!("Watch error: {:?}", e),
             }
-            Err(e) => eprintln!("Watch error: {:?}", e),
         }
     }
-}
 
-fn handle_modify<'reader>(
-    current_size: u64,
-    position: &mut u64,
-    reader: &mut BufReader<&'reader File>,
-    line_terminator: char,
-    last_line: &mut String,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let mut buffer = Vec::new();
-    let bytes_read = reader.read_to_end(&mut buffer)?;
+    fn process_file_change<'reader>(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let current_size = self.file.metadata()?.len();
 
-    if bytes_read == 0 {
-        // File truncated?
-        if current_size < *position {
-            last_line.clear();
-            return Ok(false);
+        if current_size == 0 {
+            return Ok(());
         }
 
-        // No new data
-        return Ok(true);
+        let res = self.handle_modify(current_size)?;
+
+        if !res && current_size < self.starting_len {
+            // File was truncated
+            self.position = 0;
+            self.file.seek(SeekFrom::Start(0))?;
+            self.reader = BufReader::new(self.file.try_clone()?);
+
+            self.handle_modify(current_size)?;
+        }
+
+        self.starting_len = current_size;
+        Ok(())
     }
 
-    *position += bytes_read as u64;
+    fn handle_modify<'reader>(
+        &mut self,
+        current_size: u64,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut buffer = Vec::new();
+        let bytes_read = self.reader.read_to_end(&mut buffer)?;
 
-    let chunk = String::from_utf8_lossy(&buffer);
+        if bytes_read == 0 {
+            // File truncated?
+            if current_size < self.position {
+                println!("*File truncated*");
+                self.last_line.clear();
+                return Ok(false);
+            }
 
-    // Append to last_line (incomplete tracking)
-    last_line.push_str(&chunk);
+            // No new data
+            return Ok(true);
+        }
 
-    // Print only the new bytes
-    print!("{}", chunk);
-    std::io::stdout().flush()?;
+        self.position += bytes_read as u64;
 
-    // Check if last line is complete
-    if last_line.ends_with(line_terminator) {
-        last_line.clear();
+        let chunk = String::from_utf8_lossy(&buffer);
+
+        // Append to last_line (incomplete tracking)
+        self.last_line.push_str(&chunk);
+
+        // Print only the new bytes
+        print!("{}", chunk);
+        std::io::stdout().flush()?;
+
+        // Check if last line is complete
+        if self.last_line.ends_with(self.line_terminator) {
+            self.last_line.clear();
+        }
+
+        Ok(true)
     }
-
-    Ok(true)
 }
 
 fn check_process_running(pid: i32) {

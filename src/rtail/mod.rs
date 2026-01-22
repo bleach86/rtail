@@ -8,7 +8,7 @@ mod write_std_out;
 
 // Re-export modules
 pub use args::Args;
-pub use follow_file::follow_file_inotify;
+pub use follow_file::FollowFile;
 pub use tail_bytes::tail_bytes;
 pub use tail_file::tail_file;
 pub use tail_file_by_offset::offset_tail;
