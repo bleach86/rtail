@@ -37,6 +37,12 @@ pub fn tail_file(
 
         let lines_needed = num_lines.saturating_sub(line_count);
 
+        if lines_needed == 0 {
+            // We have found enough lines
+            line_offset = pos + read_size;
+            break;
+        }
+
         if lines_needed <= terminators.len() as u64 {
             // N-th line terminator is inside this chunk
             let idx = terminators[(lines_needed - 1) as usize];
