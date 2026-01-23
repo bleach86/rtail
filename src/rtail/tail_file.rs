@@ -10,13 +10,25 @@ pub fn tail_file(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut pos: u64 = file.metadata()?.len();
     let mut line_count: u64 = 0;
+    let line_terminator: u8 = if zero_terminated { b'\0' } else { b'\n' };
+
+    let first_byte = if pos > 0 {
+        let mut buffer = [0; 1];
+        file.read_exact_at(&mut buffer, pos - 1)?;
+        buffer[0]
+    } else {
+        0
+    };
+
+    if first_byte != line_terminator {
+        line_count += 1; // Account for the first line if it doesn't start with a terminator
+    }
 
     if num_lines == 0 {
         // Nothing to print
         return Ok(());
     }
 
-    let line_terminator: u8 = if zero_terminated { b'\0' } else { b'\n' };
     let mut chunk_buffer: Vec<u8> = vec![0; CHUNK_SIZE as usize];
 
     let mut line_offset = 0;
