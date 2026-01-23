@@ -35,13 +35,7 @@ pub fn tail_file(
         let terminators: Vec<usize> =
             memrchr_iter(line_terminator, &chunk_buffer[..read_size as usize]).collect();
 
-        let lines_needed = num_lines.saturating_sub(line_count);
-
-        if lines_needed == 0 {
-            // We have found enough lines
-            line_offset = pos + read_size;
-            break;
-        }
+        let lines_needed = num_lines.saturating_sub(line_count) + 1;
 
         if lines_needed <= terminators.len() as u64 {
             // N-th line terminator is inside this chunk
