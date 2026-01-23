@@ -7,7 +7,7 @@ pub fn write_out(file: &mut File, start_offset: u64) -> Result<(), Box<dyn std::
     let file_size: u64 = file.metadata()?.len();
     file.seek(SeekFrom::Start(start_offset))?;
     let stdout: Stdout = std::io::stdout();
-    let chunk_size: usize = 1024 * 1024; // Read in 8KB chunks
+    let chunk_size: usize = 1024 * 8; // Read in 32KB chunks
 
     // Calculate total bytes to read
     // Saturating subtraction to avoid underflow
